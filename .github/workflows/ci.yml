@@ -31,7 +31,9 @@ jobs:
       - uses: oven-sh/setup-bun@v2
       - run: bun install --frozen-lockfile
       - name: API tests
-        run: bun test tests/api --reporter=junit --reporter-outfile=reports/api-junit.xml
+        run: |
+          mkdir -p reports
+          bun test tests/api --reporter=junit --reporter-outfile=reports/api-junit.xml
       - uses: actions/upload-artifact@v4
         if: always()
         with:

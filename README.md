@@ -115,6 +115,8 @@ scripts/explore-web.ts   exploratory probe used for Part 2 (not part of CI)
 
 Local result at the time of writing: **E2E 8/8 passed on two consecutive runs. API 8/8 passed (11 cases) against the live API.**
 
+**On GitHub-hosted runners**, Cloudflare challenges the datacenter IPs, so the E2E job reports **8 skipped** (annotated `blocked`) rather than failing or falsely passing. That is the guard working as designed. Running E2E in CI for real needs the WAF allowlist header (`PH_E2E_EXTRA_HEADERS`) or a self-hosted runner on an allowlisted IP.
+
 ## CI
 
 `.github/workflows/ci.yml` runs on every PR and push to `main`, and nightly:
