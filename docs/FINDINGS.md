@@ -14,6 +14,7 @@ Severity follows a simple scale: **High** means a security or data-integrity imp
 | F-W1 | Web / Security | Bot protection is inconsistent: product pages are challenged on direct load but reachable via in-app navigation | Medium |
 | F-W2 | Web / A11y / SEO | Search results are `<button>`s, not links | Medium |
 | F-A1 | API / Contract | Auth and transport errors don't follow the GraphQL error spec | Medium |
+| F-W4 | Web / SEO | Stale canonical tag survives client-side navigation (2 canonicals in `<head>`) | Low |
 | F-A6 | API / Contract | `first` silently capped at 20, and complexity is priced on the *requested* size | Low |
 | F-A4 | API / AuthZ | Authorization failure returns HTTP 200 with `access_denied` in the payload | Low |
 | F-A7 | API / Validation | Negative `first` returns an empty list instead of a validation error | Low |
@@ -97,6 +98,26 @@ A bare headless browser (`HeadlessChrome` user agent) and `curl` are challenged 
 **Repro.** `curl -s -o /dev/null -w "%{http_code}" https://www.producthunt.com/` returns `403`. In Playwright (see `tests/e2e/navigation.ts`), a direct load of a top product is challenged, while clicking the same product from `/` succeeds.
 
 **Recommendation.** Align the WAF rules for page loads and data endpoints. Monitor the challenge-solve rate for `/products/*`. Give QA a sanctioned allowlist header for synthetic tests (supported in this repo via `PH_E2E_EXTRA_HEADERS`).
+
+### F-W4: Stale canonical tag survives client-side navigation (Low, intermittent)
+
+**Observed.** Go from the home page to a product by clicking it on the leaderboard (client-side navigation). `<head>` then frequently contains **two** canonical tags:
+
+```html
+<link rel="canonical" href="https://www.producthunt.com">                               <!-- stale, from home -->
+<link rel="canonical" href="https://www.producthunt.com/products/<slug>">                <!-- correct -->
+```
+
+In a repeated run (6 iterations, headed), the stale tag was **still present after 15 s in 4 of 6 runs**. In the others it was removed, which points to a race in the head-management code (the old tag isn't always unmounted).
+
+**Impact.**
+- Conflicting canonicals make search engines ignore both.
+- Share and bookmarking tools and browser extensions that read the live DOM may pick the home page URL.
+- The SEO risk is lower if crawlers only ever do full page loads. A direct load couldn't be verified here because of Cloudflare (F-W1).
+
+**How it was found.** The E2E SEO test was flaky in Playwright UI mode, failing with a strict-mode violation (`resolved to 2 elements`). Root-causing that flake revealed the product bug. The test now asserts the *current* product's tags deterministically and records duplicates as a `known-bug F-W4` annotation in the report.
+
+**Recommendation.** Render the canonical through a single keyed head entry (for example Next.js `<Head>` with `key="canonical"`) so navigation replaces it instead of appending. Add a regression check: exactly one canonical after client-side navigation.
 
 ### F-W2: Search results are buttons, not links (Medium)
 

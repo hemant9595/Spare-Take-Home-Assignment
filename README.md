@@ -62,7 +62,7 @@ bun run report          # open the last Playwright HTML report
 | 4 | Topic page lists products | Discovery and SEO |
 | 5 | Historical daily leaderboard (fixed past date) is populated | Archive and SEO |
 | 6 | Anonymous upvote leads to a sign-in prompt (asserted absent before the click) | **Vote integrity** |
-| 7 | Product page has canonical, `og:title`, `og:image` and description | SEO and social sharing |
+| 7 | Product page has *its own* canonical, `og:title` (containing the product name), `og:image` and description; duplicate canonicals are annotated as known bug F-W4 | SEO and social sharing |
 | 8 | Unknown product returns HTTP **404** and a recoverable not-found page | Error handling |
 
 ## Summary of findings
@@ -74,6 +74,7 @@ Full details, with repro steps and recommendations, are in [docs/FINDINGS.md](do
 - **Medium.** Search results are `<button>`s rather than links. You can't open them in a new tab, screen readers announce the wrong role (WCAG 4.1.2), and crawlers can't follow them.
 - **Medium.** Auth and transport errors use `{error, error_description}` instead of the GraphQL-spec `message`, so standard clients show blank errors on auth failures.
 - **Low (API).** An authorization denial comes back as HTTP 200 with `access_denied` in the payload. `first` is silently capped at 20, while complexity is priced on the requested size. Negative `first` is accepted. Client-credentials tokens never expire.
+- **Low (SEO), found by root-causing a flaky test.** After client-side navigation, the home page's `<link rel="canonical">` often stays in `<head>` alongside the product's, so the page declares two canonicals (F-W4).
 - **Low.** Malformed JSON returns HTTP 400 with an empty body. HSTS declares `preload` with a 30-day `max-age` (preload needs a year). The 404 page has landmark and heading-order issues.
 - **Info.** Wildcard CORS and introspection are acceptable for a public API. Positive controls are also documented: auth rejection, scope enforcement, the query-complexity limit, correct ordering and pagination, no leaked internals, and real 404s.
 

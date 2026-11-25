@@ -31,4 +31,15 @@ export class ProductPage {
   get canonical(): Locator {
     return this.page.locator('head link[rel="canonical"]');
   }
+
+  /**
+   * All values of an attribute across matching <head> elements. After client-side
+   * navigation, stale tags from the previous page can remain (FINDINGS F-W4), so
+   * tests must look for the *current* page's value rather than taking `.first()`.
+   */
+  async headValues(selector: string, attr: string): Promise<string[]> {
+    return this.page
+      .locator(`head ${selector}`)
+      .evaluateAll((els, a) => els.map((e) => e.getAttribute(a) ?? ""), attr);
+  }
 }
