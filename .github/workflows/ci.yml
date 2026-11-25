@@ -1,0 +1,64 @@
+name: quality
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "0 6 * * *" # nightly run against production
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  typecheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - run: bun install --frozen-lockfile
+      - run: bun run typecheck
+
+  api:
+    needs: typecheck
+    runs-on: ubuntu-latest
+    env:
+      PH_API_TOKEN: ${{ secrets.PH_API_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - run: bun install --frozen-lockfile
+      - name: API tests
+        run: bun test tests/api --reporter=junit --reporter-outfile=reports/api-junit.xml
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: api-report
+          path: reports/
+
+  e2e:
+    needs: typecheck
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      CI: "true"
+      # Optional WAF allowlist header for test traffic, provided by infra.
+      PH_E2E_EXTRA_HEADERS: ${{ secrets.PH_E2E_EXTRA_HEADERS }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - run: bun install --frozen-lockfile
+      - name: Install Chromium
+        run: bunx playwright install --with-deps chromium
+      - name: E2E tests
+        run: bunx playwright test
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: playwright-report
+          path: |
+            playwright-report/
+            test-results/
+            reports/
