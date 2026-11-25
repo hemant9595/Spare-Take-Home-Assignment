@@ -32,7 +32,9 @@ bun run typecheck       # tsc --noEmit over src, tests and config
 bun run report          # open the last Playwright HTML report
 ```
 
-- **Without a token**, the API suite runs the 2 unauthenticated tests (4 cases, since the forged-token test has 3 inputs) and **skips** the rest with an explicit skip, never a false pass.
+- **Without a token**, the API suite runs test 1 (4 token variants) and **skips** the rest with an explicit skip, never a false pass.
+- **Rate limit:** the API allows 6,250 points per 15 minutes (about 60 requests). One full API run uses about 15 requests, so avoid looping it.
+- **Token alternative:** if you only have the app's API Key and Secret, run `bun scripts/get-token.ts`. It exchanges them (`PH_CLIENT_ID` / `PH_CLIENT_SECRET` in `.env`) for a public-scope token via the OAuth client-credentials grant.
 - **E2E** needs no credentials.
 
 ## What's covered
@@ -41,14 +43,14 @@ bun run report          # open the last Playwright HTML report
 
 | # | Test | Why it's here (risk) |
 |---|------|------|
-| 1 | No token returns 401, `data: null`, a machine-readable error and secure transport headers | AuthN, the highest-risk area |
-| 2 | Forged or malformed tokens (random, JWT `alg:none`, SQL-ish) are rejected without leaking internals | AuthN and information disclosure |
-| 3 | A developer token can't run write mutations (`userFollow`, against a non-existent ID) | AuthZ and scope enforcement |
+| 1 | Missing, random, JWT `alg:none` and SQL-ish tokens all return 401 with no data, no leaked internals and secure headers | AuthN and info disclosure |
+| 2 | A public-scope token can't run write mutations (`userFollow` against a non-existent ID returns `access_denied`) | AuthZ and scope enforcement |
+| 3 | **Known bug (`test.failing`):** user redaction is consistent between `user()` and `post.makers` | Privacy (F-A5) |
 | 4 | `order: VOTES` is monotonic and honours the `postedAfter`/`postedBefore` window | Ranking integrity |
 | 5 | Cursor pagination: page 2 continues page 1 with no overlap | API contract |
 | 6 | `post(id)` = `post(slug)` = the list view entity; an unknown id returns `null`, not an error | Data consistency |
-| 7 | Invalid GraphQL returns spec-compliant errors with no stack traces | Contract and info leakage |
-| 8 | Rate-limit budget is exposed and decreases; an oversized `first: 1000` is bounded | Abuse resistance |
+| 7 | A nested-connection "complexity bomb" is refused before execution, with no stack traces | DoS resistance |
+| 8 | Rate-limit budget is exposed and decreases; `first: 1000` is capped at 20 | Abuse resistance and contract |
 
 ### E2E: `tests/e2e/` (8 scenarios)
 
@@ -67,11 +69,13 @@ bun run report          # open the last Playwright HTML report
 
 Full details, with repro steps and recommendations, are in [docs/FINDINGS.md](docs/FINDINGS.md).
 
+- **Medium (privacy).** `user(username)` is redacted (`[REDACTED]`, id `0`), but `posts { user makers }` returns the **same people's real names, usernames, Twitter handles and avatars**, so the redaction is bypassable at scale. It is captured as a `test.failing` known-bug test.
 - **Medium.** Bot protection is inconsistent. Direct loads of `/products/*` get a Cloudflare challenge, but the same pages load through in-app navigation. That means limited anti-scraping value and friction for visitors arriving from shared links.
 - **Medium.** Search results are `<button>`s rather than links. You can't open them in a new tab, screen readers announce the wrong role (WCAG 4.1.2), and crawlers can't follow them.
 - **Medium.** Auth and transport errors use `{error, error_description}` instead of the GraphQL-spec `message`, so standard clients show blank errors on auth failures.
+- **Low (API).** An authorization denial comes back as HTTP 200 with `access_denied` in the payload. `first` is silently capped at 20, while complexity is priced on the requested size. Negative `first` is accepted. Client-credentials tokens never expire.
 - **Low.** Malformed JSON returns HTTP 400 with an empty body. HSTS declares `preload` with a 30-day `max-age` (preload needs a year). The 404 page has landmark and heading-order issues.
-- **Info.** Wildcard CORS is acceptable for a bearer-token API. Several positive controls (auth rejection, no leaked internals, `nosniff`, rate-limit headers, real 404s) are documented.
+- **Info.** Wildcard CORS and introspection are acceptable for a public API. Positive controls are also documented: auth rejection, scope enforcement, the query-complexity limit, correct ordering and pagination, no leaked internals, and real 404s.
 
 ## Architecture decisions
 
@@ -97,6 +101,7 @@ scripts/explore-web.ts   exploratory probe used for Part 2 (not part of CI)
 - **Locators follow the accessibility tree.** E2E uses roles, accessible names and `href` patterns, not CSS classes, which are hashed and unstable on this site. A locator failure therefore often means a real a11y regression too (this is how F-W2 was found).
 - **No sleeps.** Waiting relies only on web-first assertions (`expect`, `expect.poll`, `waitForURL`), and `addLocatorHandler` deals with consent banners whenever they appear.
 - **Failure artefacts.** Traces, video and screenshots are retained on failure only. CI uses `retries: 1`, so a retried test is reported as *flaky* and never hidden. Workers are capped so the suite stays a polite client of production.
+- **Known bugs are recorded as `test.failing`.** The suite stays green while the bug is tracked, and turns red the moment the bug is fixed, so the test gets promoted to a real regression test and nobody forgets it.
 - **Write paths are tested only negatively.** Voting is asserted to be *gated*, never performed, and the mutation test targets a non-existent ID. No production data is created or changed.
 
 ### E2E and bot protection
@@ -107,7 +112,7 @@ scripts/explore-web.ts   exploratory probe used for Part 2 (not part of CI)
 2. `PH_E2E_EXTRA_HEADERS='{"x-qa-allow":"..."}'` (a CI secret) injects a WAF allowlist header that infra can grant to synthetic test traffic. That is the sanctioned way to run E2E against a protected production.
 3. Product tests reach product pages **by clicking through the leaderboard**, the way real users do, because direct hard loads of `/products/*` are challenged more aggressively (finding F-W1). The tests use Playwright's standard `Desktop Chrome` device profile.
 
-Local result at the time of writing: **8/8 passed on two consecutive runs.**
+Local result at the time of writing: **E2E 8/8 passed on two consecutive runs. API 8/8 passed (11 cases) against the live API.**
 
 ## CI
 

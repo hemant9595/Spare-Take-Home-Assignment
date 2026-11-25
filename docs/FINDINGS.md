@@ -10,16 +10,73 @@ Severity follows a simple scale: **High** means a security or data-integrity imp
 
 | ID | Area | Title | Severity |
 |----|------|-------|----------|
+| F-A5 | API / Privacy | User redaction is bypassed via `post.makers` and `post.user` | **Medium** |
 | F-W1 | Web / Security | Bot protection is inconsistent: product pages are challenged on direct load but reachable via in-app navigation | Medium |
 | F-W2 | Web / A11y / SEO | Search results are `<button>`s, not links | Medium |
 | F-A1 | API / Contract | Auth and transport errors don't follow the GraphQL error spec | Medium |
+| F-A6 | API / Contract | `first` silently capped at 20, and complexity is priced on the *requested* size | Low |
+| F-A4 | API / AuthZ | Authorization failure returns HTTP 200 with `access_denied` in the payload | Low |
+| F-A7 | API / Validation | Negative `first` returns an empty list instead of a validation error | Low |
+| F-A8 | API / Security | Client-credentials tokens are issued without an expiry | Low |
 | F-A2 | API | Malformed JSON returns HTTP 400 with an **empty body** | Low |
 | F-S1 | Security headers | HSTS `preload` declared with a 30-day `max-age` (preload requires at least 1 year) | Low |
 | F-W3 | Web / A11y | 404 page has no `<main>` landmark, and its `h2` precedes the `h1` | Low |
+| F-A9 | API / Security | Introspection and "Did you mean…" field suggestions enabled in production | Info |
 | F-A3 | API / Security | CORS `Access-Control-Allow-Origin: *` with an `Authorization` header allowed | Info |
 | F-P1 | Positive controls | What works well | Info |
 
 ---
+
+### F-A5: User redaction is bypassed through posts (Medium, privacy)
+
+**Observed.** With a public-scope token, a direct lookup is redacted:
+
+```graphql
+{ user(username: "<maker-username>") { id name username } }
+# -> { "id": "0", "name": "[REDACTED]", "username": "[REDACTED]" }
+```
+
+The **same people** are returned unredacted when reached through a post:
+
+```graphql
+{ posts(first: 2, order: VOTES, postedAfter: "2024-01-01T00:00:00Z", postedBefore: "2024-01-08T00:00:00Z") {
+    edges { node { user { id name username twitterUsername profileImage } makers { id name username } } } } }
+# -> real user id, full name, username, Twitter handle and avatar URL for the poster and each maker
+```
+
+(Real values were seen during testing and are deliberately not reproduced here.)
+
+**Impact.** The redaction on `user` is evidently a deliberate privacy control, and `posts → user/makers` sidesteps it completely. Walking `posts` with pagination lets anyone harvest name, username, Twitter handle and avatar for every maker and hunter at scale, which is exactly what the redaction seems meant to prevent (GDPR data minimisation). Even if maker identities are meant to be public, as they are on the website, the inconsistency is a contract bug: integrators can't tell which policy applies.
+
+**Automated:** `tests/api/auth.test.ts` test 3 is a `test.failing` **known-bug test**. It passes while the bug exists and turns red when it's fixed, prompting a flip to a normal regression test. It asserts on counts only, so no personal data reaches CI logs.
+
+**Recommendation.** Apply one field-level redaction policy in the `User` type resolver, not per entry point, and add a schema-wide test that walks every path to `User`.
+
+### F-A4: Authorization failure is reported as HTTP 200 with a payload error (Low)
+
+**Observed.** `userFollow` with a public-scope token returns `HTTP 200` and `{"data":{"userFollow":{"errors":[{"field":"base","message":"access_denied"}]}}}`. Scope enforcement **works** (positive). But authentication failures return `401` with `invalid_oauth_token`, while authorization failures look like a form-validation error (`field: "base"`) with no machine-readable code.
+
+**Impact.** Monitoring and clients keyed on status codes or `errors[]` miss authorization denials. **Recommendation:** return a top-level GraphQL error with `extensions.code: "FORBIDDEN"` / `insufficient_scope`.
+
+### F-A6: Page size is silently capped, while complexity is priced on the requested size (Low)
+
+**Observed.**
+- `posts(first: 1000) { edges { node { id } } }` and `first: 21` both return **exactly 20** items, with no error, warning or documented maximum in the response.
+- The same `first: 1000` with nested `topics(first: 3)` is **rejected**: "complexity of 3821008 exceeds max complexity of 500000". Only 20 items would ever have been returned.
+
+**Impact.** Clients assuming they got what they asked for will under-fetch and skip data during sync jobs. Complexity scoring disagrees with execution. **Recommendation:** reject `first` above the maximum with a clear error (as GitHub's GraphQL API does), or compute complexity on the effective page size.
+
+### F-A7: Negative `first` is accepted (Low)
+
+**Observed.** `posts(first: -5)` returns `200` with `edges: []`. **Recommendation:** validate it and return an argument error, as the Relay connection spec intends.
+
+### F-A8: Client-credentials tokens do not expire (Low)
+
+**Observed.** `POST /v2/oauth/token` with `grant_type=client_credentials` returns `access_token`, `token_type`, `scope: "public"` and `created_at`, with **no `expires_in`**. The token appears to be valid indefinitely. **Impact:** a leaked token (CI logs, front-end bundles; CORS is `*`, see F-A3) stays valid until someone rotates it by hand. **Recommendation:** issue short-lived tokens with refresh, or at least document rotation and offer revocation.
+
+### F-A9: Introspection and field suggestions are enabled (Info)
+
+**Observed.** `__schema` introspection works, and typos return `"Field 'nam' doesn't exist on type 'Post' (Did you mean \`name\`?)"`. That's acceptable for a **public, documented** API. If private-scope fields exist, check that introspection doesn't advertise them to public-scope tokens.
 
 ### F-W1: Bot protection is inconsistently applied to product pages (Medium)
 
@@ -95,15 +152,11 @@ The same non-standard shape is used for a missing query (`query_missing`, HTTP 4
 
 - Missing, forged (JWT `alg:none`) and injection-style tokens all return **401** with no stack traces or framework details.
 - `x-content-type-options: nosniff`, `x-frame-options: SAMEORIGIN` and `referrer-policy` are set. `x-xss-protection: 0` follows current guidance.
-- Rate-limit headers (`x-rate-limit-limit / -remaining / -reset`) are exposed via CORS for client back-off.
+- Rate-limit headers (`x-rate-limit-limit / -remaining / -reset`) are exposed via CORS for client back-off. The budget is 6,250 points per 15 minutes, and each simple request was observed to cost 100.
+- **Query complexity is enforced** (500,000 maximum). Nested-connection bombs are refused before execution, with no data returned.
+- **Scope enforcement works**: a public-scope token can't run `userFollow` (but see F-A4 for how it reports that).
+- Unknown `post(id)` or `post(slug)` returns `null` with HTTP 200, not an error or a 500.
+- `order: VOTES` ordering, the date-window filters and cursor pagination (no overlap between pages) all behaved correctly.
 - An unknown product slug returns a real **HTTP 404** (not a soft 404), which is good for SEO.
 
 ---
-
-## Pending: authenticated API exploration
-
-These checks need a developer token (`PH_API_TOKEN`). They are automated in `tests/api/` and skip automatically without one:
-- Scope enforcement: can a developer (read-only) token call `userFollow`?
-- PII exposure in `user` and `makers` fields.
-- `order: VOTES` ordering, date-filter boundaries, cursor pagination overlap.
-- Page-size and complexity bounds (`first: 1000`) and rate-limit budget accounting.

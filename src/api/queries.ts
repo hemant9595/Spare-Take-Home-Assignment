@@ -100,6 +100,29 @@ export interface PostData {
   post: PostWithMakers | null;
 }
 
+/** Minimal maker lookup used by the privacy-consistency test (no extra PII requested). */
+export const POST_MAKERS_QUERY = /* GraphQL */ `
+  query PostMakers($first: Int!, $order: PostsOrder, $postedAfter: DateTime, $postedBefore: DateTime) {
+    posts(first: $first, order: $order, postedAfter: $postedAfter, postedBefore: $postedBefore) {
+      edges { node { id makers { id username } } }
+    }
+  }
+`;
+export interface PostMakersData {
+  posts: { edges: { node: { id: string; makers: { id: string; username: string }[] } }[] };
+}
+
+export const USER_BY_USERNAME = /* GraphQL */ `
+  query User($username: String!) { user(username: $username) { id username } }
+`;
+export interface UserData {
+  user: { id: string; username: string } | null;
+}
+
+export interface UserFollowData {
+  userFollow: { errors: { field: string; message: string }[] };
+}
+
 /** Write operation used only to verify scope enforcement (it must be rejected). */
 export const USER_FOLLOW_MUTATION = /* GraphQL */ `
   mutation Follow($userId: ID!) {
